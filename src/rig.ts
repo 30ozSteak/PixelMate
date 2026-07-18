@@ -2,7 +2,7 @@ import { composeRig, neutralTransform, type Segment, type SegmentTransform } fro
 
 export type RigJoint = { id: string; name: string; x: number; y: number; restX: number; restY: number; parentId?: string; minAngle?: number; maxAngle?: number };
 export type RigBone = { id: string; name: string; parentJointId: string; childJointId: string; segmentId?: string; length: number; minAngle?: number; maxAngle?: number };
-export type RigLayer = { id: string; segmentId: string; name: string; visiblePixels: number[]; completedSrc?: string; generatedPixels?: number[]; confidence: number; approved: boolean; pivot: { x: number; y: number }; zIndex: number };
+export type RigLayer = { id: string; segmentId: string; name: string; visiblePixels: number[]; completedSrc?: string; generatedPixels?: number[]; completionMode?: 'cloned' | 'generated' | 'refined'; confidence: number; approved: boolean; pivot: { x: number; y: number }; zIndex: number };
 export type PoseKeyframe = { id: string; cycleId: string; frameIndex: number; name: string; description: string; joints: Record<string, { x: number; y: number }>; transforms: Record<string, SegmentTransform>; preview: string; approved: boolean };
 export type CharacterRig = { status: 'empty' | 'suggested' | 'approved'; joints: RigJoint[]; bones: RigBone[]; layers: RigLayer[]; poses: PoseKeyframe[] };
 export type RigAnalysisSuggestion = { segments: Segment[]; joints: RigJoint[]; bones: RigBone[] };
@@ -10,7 +10,7 @@ export type CompletedRigLayer = { layerId: string; completedSrc?: string; genera
 export type PoseSuggestion = { joints: Record<string, { x: number; y: number }>; transforms: Record<string, SegmentTransform> };
 
 export const emptyRig = (): CharacterRig => ({ status: 'empty', joints: [], bones: [], layers: [], poses: [] });
-export const layersFromSegments = (segments: Segment[]): RigLayer[] => segments.map((segment) => ({ id: `layer-${segment.id}`, segmentId: segment.id, name: segment.name, visiblePixels: segment.pixels, generatedPixels: [], confidence: 1, approved: true, pivot: segment.pivot, zIndex: segment.zIndex }));
+export const layersFromSegments = (segments: Segment[]): RigLayer[] => segments.map((segment) => ({ id: `layer-${segment.id}`, segmentId: segment.id, name: segment.name, visiblePixels: segment.pixels, generatedPixels: [], confidence: 1, approved: false, pivot: segment.pivot, zIndex: segment.zIndex }));
 export const jointMap = (joints: RigJoint[]) => Object.fromEntries(joints.map((joint) => [joint.id, { x: joint.x, y: joint.y }]));
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -45,7 +45,55 @@ export function transformsFromJoints(rest: RigJoint[], posed: RigJoint[], bones:
 export function interpolateTransforms(a: Record<string, SegmentTransform>, b: Record<string, SegmentTransform>, t: number): Record<string, SegmentTransform> { const ids = new Set([...Object.keys(a), ...Object.keys(b)]); return Object.fromEntries([...ids].map((id) => { const left = { ...neutralTransform(), ...(a[id] || {}) }; const right = { ...neutralTransform(), ...(b[id] || {}) }; return [id, { x: Math.round(left.x + (right.x - left.x) * t), y: Math.round(left.y + (right.y - left.y) * t), rotation: Math.round(left.rotation + (right.rotation - left.rotation) * t), visible: t < .5 ? left.visible : right.visible }]; })); }
 export async function renderPose(source: string, width: number, height: number, segments: Segment[], transforms: Record<string, SegmentTransform>, layers: RigLayer[] = []): Promise<string> { const completed = Object.fromEntries(layers.filter((layer) => layer.approved && layer.completedSrc).map((layer) => [layer.segmentId, layer.completedSrc!])); return composeRig(source, width, height, segments, transforms, completed); }
 
+/** Creates a pixel-safe offline completion by extending the nearest visible layer colors. */
+export async function cloneHiddenLayer(source: string, width: number, height: number, layer: RigLayer, candidates: number[]): Promise<{ completedSrc?: string; generatedPixels: number[] }> {
+  if (!layer.visiblePixels.length) return { generatedPixels: [] };
+  const image = await loadImage(source);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(image, 0, 0, width, height);
+  const sourceData = ctx.getImageData(0, 0, width, height);
+  const output = ctx.createImageData(width, height);
+  const total = width * height;
+  const nearest = new Int32Array(total);
+  nearest.fill(-1);
+  const queue = new Int32Array(total);
+  let head = 0;
+  let tail = 0;
+  for (const pixel of layer.visiblePixels) {
+    if (pixel < 0 || pixel >= total || nearest[pixel] !== -1) continue;
+    nearest[pixel] = pixel;
+    queue[tail++] = pixel;
+    const offset = pixel * 4;
+    output.data.set(sourceData.data.slice(offset, offset + 4), offset);
+  }
+  while (head < tail) {
+    const pixel = queue[head++];
+    const x = pixel % width;
+    const neighbors = [pixel - width, pixel + width, x > 0 ? pixel - 1 : -1, x < width - 1 ? pixel + 1 : -1];
+    for (const next of neighbors) {
+      if (next < 0 || next >= total || nearest[next] !== -1) continue;
+      nearest[next] = nearest[pixel];
+      queue[tail++] = next;
+    }
+  }
+  const generatedPixels: number[] = [];
+  for (const pixel of candidates) {
+    const sourcePixel = nearest[pixel];
+    if (sourcePixel < 0) continue;
+    const offset = pixel * 4;
+    const sourceOffset = sourcePixel * 4;
+    output.data.set(sourceData.data.slice(sourceOffset, sourceOffset + 4), offset);
+    generatedPixels.push(pixel);
+  }
+  ctx.putImageData(output, 0, 0);
+  return { completedSrc: canvas.toDataURL('image/png'), generatedPixels };
+}
+
 const loadImage = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = src; });
 const hexRgb = (hex: string) => { const value = hex.replace('#', ''); return [Number.parseInt(value.slice(0, 2), 16), Number.parseInt(value.slice(2, 4), 16), Number.parseInt(value.slice(4, 6), 16)] as const; };
 const rgbLab = (red: number, green: number, blue: number) => { const linear = [red, green, blue].map((value) => { const channel = value / 255; return channel > .04045 ? Math.pow((channel + .055) / 1.055, 2.4) : channel / 12.92; }); const x = (linear[0] * .4124 + linear[1] * .3576 + linear[2] * .1805) / .95047; const y = linear[0] * .2126 + linear[1] * .7152 + linear[2] * .0722; const z = (linear[0] * .0193 + linear[1] * .1192 + linear[2] * .9505) / 1.08883; const pivot = (value: number) => value > .008856 ? Math.cbrt(value) : 7.787 * value + 16 / 116; const fx = pivot(x); const fy = pivot(y); const fz = pivot(z); return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)] as const; };
-export async function normalizeCompletedLayer(source: string, generated: string, width: number, height: number, palette: string[], visiblePixels: number[]): Promise<{ completedSrc: string; generatedPixels: number[] }> { const [sourceImage, generatedImage] = await Promise.all([loadImage(source), loadImage(generated)]); const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height; const ctx = canvas.getContext('2d')!; ctx.imageSmoothingEnabled = false; ctx.drawImage(sourceImage, 0, 0, width, height); const sourceData = ctx.getImageData(0, 0, width, height); ctx.clearRect(0, 0, width, height); ctx.drawImage(generatedImage, 0, 0, width, height); const generatedData = ctx.getImageData(0, 0, width, height); const output = ctx.createImageData(width, height); const visible = new Set(visiblePixels); const colors = palette.map((hex) => ({ rgb: hexRgb(hex), lab: rgbLab(...hexRgb(hex)) })); const added: number[] = []; for (let pixel = 0; pixel < width * height; pixel += 1) { const offset = pixel * 4; if (visible.has(pixel)) { output.data.set(sourceData.data.slice(offset, offset + 4), offset); continue; } if (!generatedData.data[offset + 3]) continue; const lab = rgbLab(generatedData.data[offset], generatedData.data[offset + 1], generatedData.data[offset + 2]); const nearest = colors.reduce((best, color) => { const score = Math.hypot(lab[0] - color.lab[0], lab[1] - color.lab[1], lab[2] - color.lab[2]); return score < best.score ? { color, score } : best; }, { color: colors[0], score: Infinity }); if (!nearest.color) continue; output.data[offset] = nearest.color.rgb[0]; output.data[offset + 1] = nearest.color.rgb[1]; output.data[offset + 2] = nearest.color.rgb[2]; output.data[offset + 3] = 255; added.push(pixel); } ctx.putImageData(output, 0, 0); return { completedSrc: canvas.toDataURL('image/png'), generatedPixels: added }; }
+export async function normalizeCompletedLayer(source: string, generated: string, width: number, height: number, palette: string[], visiblePixels: number[], allowedGeneratedPixels?: Iterable<number>): Promise<{ completedSrc: string; generatedPixels: number[] }> { const [sourceImage, generatedImage] = await Promise.all([loadImage(source), loadImage(generated)]); const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height; const ctx = canvas.getContext('2d')!; ctx.imageSmoothingEnabled = false; ctx.drawImage(sourceImage, 0, 0, width, height); const sourceData = ctx.getImageData(0, 0, width, height); ctx.clearRect(0, 0, width, height); ctx.drawImage(generatedImage, 0, 0, width, height); const generatedData = ctx.getImageData(0, 0, width, height); const output = ctx.createImageData(width, height); const visible = new Set(visiblePixels); const allowed = allowedGeneratedPixels ? new Set(allowedGeneratedPixels) : null; const colors = palette.map((hex) => ({ rgb: hexRgb(hex), lab: rgbLab(...hexRgb(hex)) })); const added: number[] = []; for (let pixel = 0; pixel < width * height; pixel += 1) { const offset = pixel * 4; if (visible.has(pixel)) { output.data.set(sourceData.data.slice(offset, offset + 4), offset); continue; } if ((allowed && !allowed.has(pixel)) || !generatedData.data[offset + 3]) continue; const lab = rgbLab(generatedData.data[offset], generatedData.data[offset + 1], generatedData.data[offset + 2]); const nearest = colors.reduce((best, color) => { const score = Math.hypot(lab[0] - color.lab[0], lab[1] - color.lab[1], lab[2] - color.lab[2]); return score < best.score ? { color, score } : best; }, { color: colors[0], score: Infinity }); if (!nearest.color) continue; output.data[offset] = nearest.color.rgb[0]; output.data[offset + 1] = nearest.color.rgb[1]; output.data[offset + 2] = nearest.color.rgb[2]; output.data[offset + 3] = 255; added.push(pixel); } ctx.putImageData(output, 0, 0); return { completedSrc: canvas.toDataURL('image/png'), generatedPixels: added }; }

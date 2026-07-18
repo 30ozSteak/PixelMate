@@ -1,5 +1,6 @@
 import type { CharacterRig, RigBone, RigJoint } from './rig';
 import type { Segment, SegmentTransform } from './segmentation';
+export type { MotionClip } from './animation';
 
 export type MaterialSlot = 'skin' | 'hair' | 'shirt' | 'jacket' | 'pants' | 'metal' | 'leather' | 'emissive' | 'unassigned';
 export type AttachmentKind = 'hair-front' | 'hair-back' | 'horns-ears' | 'headwear' | 'face' | 'chest' | 'back' | 'shoulder' | 'hand' | 'cape-tail' | 'weapon-primary' | 'weapon-secondary';
@@ -7,12 +8,10 @@ export type SemanticPart = Segment & { materialSlot: MaterialSlot; parentJointId
 export type AttachmentSlot = { id: string; name: string; kind: AttachmentKind; parentJointId: string; anchor: { x: number; y: number }; zIndex: number; secondaryJointIds: string[]; visible: boolean };
 export type Skeleton = { joints: RigJoint[]; bones: RigBone[]; approved: boolean };
 export type SemanticModel = { id: string; name: string; source: string; width: number; height: number; opaquePixelCount: number; parts: SemanticPart[]; skeleton: Skeleton; attachments: AttachmentSlot[]; pivot: { x: number; y: number }; baseline: number; approved: boolean };
-export type MotionFrame = { frameIndex: number; duration: number; jointPositions: Record<string, { x: number; y: number }>; partTransforms: Record<string, SegmentTransform>; attachmentTransforms: Record<string, SegmentTransform> };
-export type MotionClip = { id: string; name: string; loopMode: 'loop' | 'once' | 'ping-pong'; frames: MotionFrame[] };
 export type RenderRecipe = { palette: string[]; outlineColors: string[]; outlineWidth: number; lightDirection: 'top-left' | 'top' | 'top-right'; shadingBands: number; clusterScale: number; facialRules: string; mustPreserve: string; materials: Record<MaterialSlot, string[]> };
 export type SkinReference = { id: string; name: string; src: string };
 export type PlayerSkin = { id: string; name: string; references: SkinReference[]; recipe: RenderRecipe; attachments: Partial<Record<AttachmentKind, string>>; provenance: { provider: 'local' | 'cloud' | 'manual'; createdAt: string }; approved: boolean };
-export type RenderedVariant = { id: string; skinId: string; modelId: string; clipId: string; frameSources: string[]; frameDurations: number[]; createdAt: string; approved: boolean };
+export type RenderedVariant = { id: string; skinId: string; modelId: string; clipId: string; frameSources: string[]; frameDurations: number[]; provenance?: Array<'authored' | 'deterministic' | 'generated' | 'refined'>; validation?: ValidationFinding[]; createdAt: string; approved: boolean };
 export type ValidationFinding = { id: string; severity: 'error' | 'warning' | 'info'; scope: 'model' | 'rig' | 'skin' | 'frame' | 'export'; message: string; partId?: string; frameIndex?: number; repair?: 'assign' | 'ground' | 'align' | 'palette' | 'attachment' };
 
 export const materialForName = (name: string): MaterialSlot => {

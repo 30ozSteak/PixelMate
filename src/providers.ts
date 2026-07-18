@@ -16,7 +16,8 @@ export type CycleGenerationRequest = {
 };
 
 export type RigAnalysisRequest = { source: string; width: number; height: number; palette: string[]; identity?: CycleGenerationRequest['identity']; segments?: CycleGenerationRequest['segments'] };
-export type LayerCompletionRequest = RigAnalysisRequest & { layers: RigLayer[] };
+export type LayerCompletionTarget = RigLayer & { candidatePixels?: number[]; occluderNames?: string[] };
+export type LayerCompletionRequest = RigAnalysisRequest & { layers: LayerCompletionTarget[] };
 export type PoseSuggestionRequest = RigAnalysisRequest & { description: string; joints: RigJoint[]; bones: RigBone[] };
 export type InbetweenGenerationRequest = CycleGenerationRequest & { keyframes: PoseKeyframe[]; guideFrames: GeneratedFrame[]; layers: RigLayer[]; joints: RigJoint[]; bones: RigBone[] };
 
